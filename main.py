@@ -18,13 +18,26 @@ NODE_TO_INPUT = {v: k for k, v in INPUT_TO_NODE.items()}
 # ============================================
 # FIXED POSITIONS FOR 40 NODES
 # ============================================
-np.random.seed(42)  # For reproducible random positions
+# Define node positions using a simple grid builder.
+# Edit X_COORDS and Y_COORDS to reposition rows/columns.
+X_COORDS = [-9.5, -7.0, -4.5, -2.0, 0.5, 3.0, 5.5, 8.0]
+Y_COORDS = [8.0, 5.0, 2.0, -1.0, -4.0]
 
-# Generate fixed random positions (x, y coordinates between -10 and 10)
-fixed_positions = {
-    i: (np.random.uniform(-10, 10), np.random.uniform(-10, 10)) 
-    for i in range(40)
+# Build nodes left-to-right, top-to-bottom.
+NODE_POSITIONS = [
+    (x, y)
+    for y in Y_COORDS
+    for x in X_COORDS
+]
+
+# If you want to override a single node position, use CUSTOM_NODE_POSITIONS.
+CUSTOM_NODE_POSITIONS = {
+    # Example: 0: (-10.0, 9.0),
 }
+for node_id, coords in CUSTOM_NODE_POSITIONS.items():
+    NODE_POSITIONS[node_id] = coords
+
+fixed_positions = {i: NODE_POSITIONS[i] for i in range(40)}
 
 # Generate random rectangle dimensions for each node
 # Width and height are independent random values between 100 and 300
