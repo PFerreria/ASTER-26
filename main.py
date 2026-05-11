@@ -4,9 +4,6 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 import random
-import json
-import re
-from pathlib import Path
 
 # ============================================
 # CONFIGURATION
@@ -14,80 +11,46 @@ from pathlib import Path
 app = dash.Dash(__name__, prevent_initial_callbacks=True)
 app.title = "Node Activation System"
 
-# Number of nodes
-NUM_NODES = 35
-
-# Map input numbers (60 - ...) to node IDs (0..NUM_NODES-1)
-INPUT_TO_NODE = {i: i - 60 for i in range(60, 60 + NUM_NODES)}
+# Map input numbers (60-94) to node IDs (0-34)
+INPUT_TO_NODE = {i: i - 60 for i in range(60, 95)}  # 60->0, 61->1, ..., 94->34
 NODE_TO_INPUT = {v: k for k, v in INPUT_TO_NODE.items()}
 
 # ============================================
-# FIXED POSITIONS FOR 40 NODES
+# FIXED POSITIONS FOR 35 NODES
 # ============================================
 # Define node positions using a simple grid builder.
 # Edit X_COORDS and Y_COORDS to reposition rows/columns.
-# We build at least NUM_NODES positions and then slice.
-X_COORDS = [-9.5, -6.5, -3.5, -0.5, 2.5, 5.5, 8.5]
+X_COORDS = [-9.5, -7.0, -4.5, -2.0, 0.5, 3.0, 5.5, 8.0]
 Y_COORDS = [8.0, 5.0, 2.0, -1.0, -4.0]
 
-# Build nodes left-to-right, top-to-bottom and take only NUM_NODES
+# Build nodes left-to-right, top-to-bottom.
 NODE_POSITIONS = [
     (x, y)
     for y in Y_COORDS
     for x in X_COORDS
-][:NUM_NODES]
+]
 
 # If you want to override a single node position, use CUSTOM_NODE_POSITIONS.
 CUSTOM_NODE_POSITIONS = {
     # Example: 0: (-10.0, 9.0),
 }
 for node_id, coords in CUSTOM_NODE_POSITIONS.items():
-    if 0 <= node_id < NUM_NODES:
-        NODE_POSITIONS[node_id] = coords
+    NODE_POSITIONS[node_id] = coords
 
-# persisted positions file
-POSITIONS_FILE = Path(__file__).parent / 'node_positions.json'
-
-fixed_positions = {i: NODE_POSITIONS[i] for i in range(NUM_NODES)}
-
-# If positions were previously saved to disk, load and override
-def load_positions():
-    if POSITIONS_FILE.exists():
-        try:
-            with open(POSITIONS_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            # expect dict of id -> [x,y]
-            for k, v in data.items():
-                idx = int(k)
-                if 0 <= idx < NUM_NODES and isinstance(v, (list, tuple)) and len(v) >= 2:
-                    fixed_positions[idx] = (float(v[0]), float(v[1]))
-        except Exception:
-            pass
-
-
-def save_positions(positions_dict):
-    try:
-        out = {str(k): [float(v[0]), float(v[1])] for k, v in positions_dict.items()}
-        with open(POSITIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(out, f, indent=2)
-    except Exception:
-        pass
-
-# Load any saved positions at startup
-load_positions()
+fixed_positions = {i: NODE_POSITIONS[i] for i in range(35)}
 
 # Generate random rectangle dimensions for each node
 # Width and height are independent random values between 100 and 300
-random_widths = {i: random.randint(100, 300) for i in range(NUM_NODES)}
-random_heights = {i: random.randint(100, 300) for i in range(NUM_NODES)}
+random_widths = {i: random.randint(100, 300) for i in range(35)}
+random_heights = {i: random.randint(100, 300) for i in range(35)}
 
 # Create node data with fixed positions and rectangle dimensions
 node_data = pd.DataFrame({
-    'id': range(NUM_NODES),
-    'x': [fixed_positions[i][0] for i in range(NUM_NODES)],
-    'y': [fixed_positions[i][1] for i in range(NUM_NODES)],
-    'width': [random_widths[i] for i in range(NUM_NODES)],
-    'height': [random_heights[i] for i in range(NUM_NODES)]
+    'id': range(35),
+    'x': [fixed_positions[i][0] for i in range(35)],
+    'y': [fixed_positions[i][1] for i in range(35)],
+    'width': [random_widths[i] for i in range(35)],
+    'height': [random_heights[i] for i in range(35)]
 })
 
 # ============================================
@@ -184,7 +147,7 @@ app.layout = html.Div(className='container', children=[
                 id='node-input',
                 type='number',
                 min=60,
-                max=99,
+                    max=94,
                 step=1,
                 value=60
             ),
@@ -231,62 +194,35 @@ def create_figure(active_nodes):
         showlegend=False
     ))
     
-    # Add a rectangle shape for every node so it can be dragged.
-    # The order of shapes matches node id so relayout keys reference shapes[idx]
-    hover_x = []
-    hover_y = []
-    hover_text = []
-    for idx, node in node_data.iterrows():
-        is_active = idx in active_nodes if active_nodes else False
-        x0 = node['x'] - node['width'] / 200
-        x1 = node['x'] + node['width'] / 200
-        y0 = node['y'] - node['height'] / 200
-        y1 = node['y'] + node['height'] / 200
-        fig.add_shape(
-            type="rect",
-            x0=x0,
-            x1=x1,
-            y0=y0,
-            y1=y1,
-            line=dict(color=("white" if is_active else "#404040"), width=1),
-            fillcolor=("white" if is_active else "rgba(255,255,255,0)"),
-            opacity=(0.9 if is_active else 0.6),
-            layer="below",
-            editable=True
-        )
-        hover_x.append(node['x'])
-        hover_y.append(node['y'])
-        hover_text.append(f"Node {int(node['id'])}<br>Input: {NODE_TO_INPUT[int(node['id'])]}<br>Width: {int(node['width'])}px<br>Height: {int(node['height'])}px")
-
-    # Invisible scatter for hover labels for all nodes
-    fig.add_trace(go.Scatter(
-        x=hover_x,
-        y=hover_y,
-        mode='markers',
-        marker=dict(size=1, color='white', opacity=0),
-        text=hover_text,
-        hoverinfo='text',
-        hoverlabel=dict(bgcolor='#2d2d2d', font=dict(color='white')),
-        showlegend=False
-    ))
-
-    # Add an invisible click-catcher grid so clicks anywhere can be captured.
-    # Grid spans the visible axis range with moderate density to capture arbitrary clicks.
-    x_min = min(X_COORDS) - 3
-    x_max = max(X_COORDS) + 3
-    y_min = min(Y_COORDS) - 3
-    y_max = max(Y_COORDS) + 3
-    x_vals = list(np.arange(x_min, x_max + 0.001, 0.5))
-    y_vals = list(np.arange(y_min, y_max + 0.001, 0.5))
-    gx, gy = np.meshgrid(x_vals, y_vals)
-    fig.add_trace(go.Scatter(
-        x=gx.ravel().tolist(),
-        y=gy.ravel().tolist(),
-        mode='markers',
-        marker=dict(size=6, color='rgba(0,0,0,0)'),
-        hoverinfo='none',
-        showlegend=False
-    ))
+    # Add white rectangles for active nodes
+    if active_nodes:
+        for node_id in active_nodes:
+            node = node_data.iloc[node_id]
+            
+            # Draw rectangle
+            fig.add_shape(
+                type="rect",
+                x0=node['x'] - node['width']/200,
+                x1=node['x'] + node['width']/200,
+                y0=node['y'] - node['height']/200,
+                y1=node['y'] + node['height']/200,
+                line=dict(color="white", width=1),
+                fillcolor="white",
+                opacity=0.9,
+                layer="above"
+            )
+            
+            # Invisible point for hover info
+            fig.add_trace(go.Scatter(
+                x=[node['x']],
+                y=[node['y']],
+                mode='markers',
+                marker=dict(size=1, color='white', opacity=0),
+                text=[f"Node {node_id}<br>Input: {NODE_TO_INPUT[node_id]}<br>Width: {node['width']}px<br>Height: {node['height']}px"],
+                hoverinfo='text',
+                hoverlabel=dict(bgcolor='#2d2d2d', font=dict(color='white')),
+                showlegend=False
+            ))
     
     # Black background layout
     fig.update_layout(
@@ -296,8 +232,7 @@ def create_figure(active_nodes):
         paper_bgcolor='#000000',
         height=550,
         margin=dict(l=10, r=10, t=10, b=10),
-        showlegend=False,
-        uirevision='nodes'
+        showlegend=False
     )
     
     return fig
@@ -316,18 +251,15 @@ def create_figure(active_nodes):
      Input('cycle-button', 'n_clicks'),
      Input('stop-button', 'n_clicks'),
      Input('reset-button', 'n_clicks'),
-    Input('cycle-interval', 'n_intervals'),
-    Input('node-graph', 'relayoutData'),
-    Input('node-graph', 'clickData')],
+     Input('cycle-interval', 'n_intervals')],
     [State('active-nodes', 'data'),
      State('cycle-active', 'data')]
 )
 def update_system(input_value, random_clicks, cycle_clicks, stop_clicks, 
-               reset_clicks, interval, relayout_data, click_data, active_nodes, cycle_active):
+                  reset_clicks, interval, active_nodes, cycle_active):
     
     ctx = dash.callback_context
-    triggered = ctx.triggered[0]['prop_id'] if ctx.triggered else None
-    trigger_id = triggered.split('.')[0] if triggered else None
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
     
     # Initialize
     if active_nodes is None:
@@ -337,7 +269,7 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     cycle_disabled = not new_cycle_active
     
     # Check if all nodes are activated
-    all_activated = len(active_nodes) >= NUM_NODES
+    all_activated = len(active_nodes) >= 35
     
     # If all nodes are activated and cycle is active, reset and continue
     if all_activated and new_cycle_active:
@@ -350,46 +282,6 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
             active_nodes.append(0)
             input_value = NODE_TO_INPUT[0]
     
-    # Handle graph interactions from the graph (dragging or click-to-place)
-    if trigger_id == 'node-graph':
-        # Dragging (relayoutData)
-        if relayout_data:
-            updates = {}
-            for k, v in relayout_data.items():
-                m = re.match(r"shapes\[(\d+)\]\.(x0|x1|y0|y1)", k)
-                if m:
-                    idx = int(m.group(1))
-                    prop = m.group(2)
-                    updates.setdefault(idx, {})[prop] = v
-            for idx, props in updates.items():
-                if all(p in props for p in ('x0', 'x1', 'y0', 'y1')) and 0 <= idx < NUM_NODES:
-                    cx = (props['x0'] + props['x1']) / 2.0
-                    cy = (props['y0'] + props['y1']) / 2.0
-                    # update in-memory positions
-                    fixed_positions[idx] = (cx, cy)
-                    node_data.at[idx, 'x'] = cx
-                    node_data.at[idx, 'y'] = cy
-            # persist positions
-            save_positions(fixed_positions)
-
-        # Click-to-place: use current `node-input` to pick which node to move
-        elif click_data and 'points' in click_data and len(click_data['points']) > 0:
-            pt = click_data['points'][0]
-            if 'x' in pt and 'y' in pt and input_value is not None:
-                try:
-                    iv = int(input_value)
-                    if iv in INPUT_TO_NODE:
-                        node_id = INPUT_TO_NODE[iv]
-                        if 0 <= node_id < NUM_NODES:
-                            cx = float(pt['x'])
-                            cy = float(pt['y'])
-                            fixed_positions[node_id] = (cx, cy)
-                            node_data.at[node_id, 'x'] = cx
-                            node_data.at[node_id, 'y'] = cy
-                            save_positions(fixed_positions)
-                except Exception:
-                    pass
-
     # Handle reset button
     if trigger_id == 'reset-button' and reset_clicks and reset_clicks > 0:
         active_nodes = []
@@ -399,7 +291,7 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     
     # Handle random button
     elif trigger_id == 'random-button' and random_clicks and random_clicks > 0:
-        input_value = np.random.randint(60, 100)
+        input_value = np.random.randint(60, 95)
         node_id = INPUT_TO_NODE[input_value]
         if node_id not in active_nodes:
             active_nodes.append(node_id)
@@ -421,9 +313,9 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     
     # Handle cycle interval
     elif trigger_id == 'cycle-interval' and new_cycle_active:
-        if len(active_nodes) < NUM_NODES:
+        if len(active_nodes) < 35:
             # Find next unactivated node
-            for i in range(NUM_NODES):
+            for i in range(35):
                 if i not in active_nodes:
                     active_nodes.append(i)
                     input_value = NODE_TO_INPUT[i]
@@ -431,7 +323,7 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     
     # Handle manual input
     elif trigger_id == 'node-input' and input_value is not None:
-        input_value = max(60, min(99, int(input_value)))
+        input_value = max(60, min(94, int(input_value)))
         node_id = INPUT_TO_NODE[input_value]
         if node_id not in active_nodes and not all_activated:
             active_nodes.append(node_id)
