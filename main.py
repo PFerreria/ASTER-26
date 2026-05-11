@@ -4,6 +4,8 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 import random
+import os
+import json
 
 # ============================================
 # CONFIGURATION
@@ -152,6 +154,7 @@ app.layout = html.Div(className='container', children=[
                 value=60
             ),
             html.Button('Random', id='random-button', n_clicks=0),
+            html.Button('Edit nodes', id='edit-button', n_clicks=0),
             html.Button('Start Loop', id='cycle-button', n_clicks=0),
             html.Button('Stop', id='stop-button', n_clicks=0),
             html.Button('Reset', id='reset-button', n_clicks=0),
@@ -170,23 +173,63 @@ app.layout = html.Div(className='container', children=[
     # Hidden state (no visible elements)
     dcc.Store(id='active-nodes', data=[]),
     dcc.Store(id='cycle-active', data=False),
+    dcc.Store(id='edit-mode', data=False),
+    dcc.Store(id='edit-index', data=0),
+    dcc.Store(id='node-positions-store', data=None),
     dcc.Interval(id='cycle-interval', interval=1000, disabled=True),
 ])
 
 # ============================================
 # HELPER FUNCTIONS
 # ============================================
-def create_figure(active_nodes):
+def save_positions_to_file(positions):
+    """Save node positions to a JSON file in the same folder as the script."""
+    try:
+        folder = os.path.dirname(__file__)
+    except NameError:
+        folder = os.getcwd()
+    path = os.path.join(folder, 'node_positions.json')
+    with open(path, 'w') as f:
+        json.dump(positions, f)
+
+
+def load_positions_from_file():
+    """Load node positions from JSON file if available, otherwise return None."""
+    try:
+        folder = os.path.dirname(__file__)
+    except NameError:
+        folder = os.getcwd()
+    path = os.path.join(folder, 'node_positions.json')
+    if os.path.exists(path):
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            # ensure list length 35
+            if isinstance(data, list) and len(data) == 35:
+                return data
+        except Exception:
+            pass
+    return None
+
+
+def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index=0):
     """Create graph with white rectangle nodes appearing on activation"""
     fig = go.Figure()
     
-    # Add all base nodes (small gray dots)
+    # Add base nodes (small gray dots) using node_positions if provided
+    if node_positions:
+        xs = [p[0] for p in node_positions if p is not None]
+        ys = [p[1] for p in node_positions if p is not None]
+    else:
+        xs = list(node_data['x'])
+        ys = list(node_data['y'])
+
     fig.add_trace(go.Scatter(
-        x=node_data['x'],
-        y=node_data['y'],
+        x=xs,
+        y=ys,
         mode='markers',
         marker=dict(
-            size=4,
+            size=6,
             color='#404040',
             line=dict(width=0)
         ),
@@ -197,15 +240,24 @@ def create_figure(active_nodes):
     # Add white rectangles for active nodes
     if active_nodes:
         for node_id in active_nodes:
-            node = node_data.iloc[node_id]
-            
+            # obtain node coords from provided node_positions if present
+            if node_positions and node_positions[node_id] is not None:
+                nx, ny = node_positions[node_id]
+                width = node_data.iloc[node_id]['width']
+                height = node_data.iloc[node_id]['height']
+            else:
+                node = node_data.iloc[node_id]
+                nx, ny = node['x'], node['y']
+                width = node['width']
+                height = node['height']
+
             # Draw rectangle
             fig.add_shape(
                 type="rect",
-                x0=node['x'] - node['width']/200,
-                x1=node['x'] + node['width']/200,
-                y0=node['y'] - node['height']/200,
-                y1=node['y'] + node['height']/200,
+                x0=nx - width/200,
+                x1=nx + width/200,
+                y0=ny - height/200,
+                y1=ny + height/200,
                 line=dict(color="white", width=1),
                 fillcolor="white",
                 opacity=0.9,
@@ -214,11 +266,11 @@ def create_figure(active_nodes):
             
             # Invisible point for hover info
             fig.add_trace(go.Scatter(
-                x=[node['x']],
-                y=[node['y']],
+                x=[nx],
+                y=[ny],
                 mode='markers',
                 marker=dict(size=1, color='white', opacity=0),
-                text=[f"Node {node_id}<br>Input: {NODE_TO_INPUT[node_id]}<br>Width: {node['width']}px<br>Height: {node['height']}px"],
+                text=[f"Node {node_id}<br>Input: {NODE_TO_INPUT[node_id]}<br>Width: {width}px<br>Height: {height}px"],
                 hoverinfo='text',
                 hoverlabel=dict(bgcolor='#2d2d2d', font=dict(color='white')),
                 showlegend=False
@@ -235,6 +287,14 @@ def create_figure(active_nodes):
         showlegend=False
     )
     
+    # If in edit mode, add an annotation to show progress
+    if edit_mode:
+        fig.add_annotation(
+            x=0, y=11, xref='x', yref='y', showarrow=False,
+            text=f"Editing nodes: click to set node {edit_index + 1} / 35",
+            font=dict(color='yellow', size=12), bgcolor='#222'
+        )
+    
     return fig
 
 # ============================================
@@ -245,18 +305,27 @@ def create_figure(active_nodes):
      Output('node-input', 'value'),
      Output('active-nodes', 'data'),
      Output('cycle-active', 'data'),
-     Output('cycle-interval', 'disabled')],
+     Output('cycle-interval', 'disabled'),
+     Output('edit-mode', 'data'),
+     Output('edit-index', 'data'),
+     Output('node-positions-store', 'data')],
     [Input('node-input', 'value'),
      Input('random-button', 'n_clicks'),
      Input('cycle-button', 'n_clicks'),
      Input('stop-button', 'n_clicks'),
      Input('reset-button', 'n_clicks'),
-     Input('cycle-interval', 'n_intervals')],
+     Input('cycle-interval', 'n_intervals'),
+     Input('edit-button', 'n_clicks'),
+     Input('node-graph', 'clickData')],
     [State('active-nodes', 'data'),
-     State('cycle-active', 'data')]
+     State('cycle-active', 'data'),
+     State('edit-mode', 'data'),
+     State('edit-index', 'data'),
+     State('node-positions-store', 'data')]
 )
 def update_system(input_value, random_clicks, cycle_clicks, stop_clicks, 
-                  reset_clicks, interval, active_nodes, cycle_active):
+                  reset_clicks, interval, edit_clicks, click_data,
+                  active_nodes, cycle_active, edit_mode, edit_index, node_positions):
     
     ctx = dash.callback_context
     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
@@ -282,12 +351,29 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
             active_nodes.append(0)
             input_value = NODE_TO_INPUT[0]
     
+    # Ensure node_positions is initialized from file or defaults
+    if node_positions is None:
+        loaded = load_positions_from_file()
+        if loaded:
+            node_positions = loaded
+            # Update node_data positions to loaded ones
+            for i, p in enumerate(node_positions):
+                if p is not None:
+                    node_data.at[i, 'x'] = p[0]
+                    node_data.at[i, 'y'] = p[1]
+        else:
+            # default positions from node_data
+            node_positions = [[float(node_data.at[i, 'x']), float(node_data.at[i, 'y'])] for i in range(35)]
+
     # Handle reset button
     if trigger_id == 'reset-button' and reset_clicks and reset_clicks > 0:
         active_nodes = []
         input_value = 60
         new_cycle_active = False
         cycle_disabled = True
+        # also exit edit mode
+        edit_mode = False
+        edit_index = 0
     
     # Handle random button
     elif trigger_id == 'random-button' and random_clicks and random_clicks > 0:
@@ -308,6 +394,17 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     
     # Handle stop button
     elif trigger_id == 'stop-button' and stop_clicks and stop_clicks > 0:
+        new_cycle_active = False
+        cycle_disabled = True
+
+    # Handle edit button: start editing (reset positions)
+    elif trigger_id == 'edit-button' and edit_clicks and edit_clicks > 0:
+        # Enter edit mode and reset stored positions
+        edit_mode = True
+        edit_index = 0
+        node_positions = [None for _ in range(35)]
+        # while editing, clear active highlighting
+        active_nodes = []
         new_cycle_active = False
         cycle_disabled = True
     
@@ -333,11 +430,38 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     # Ensure input_value is set
     if input_value is None:
         input_value = 60
-    
+
+    # Handle graph click when in edit mode
+    if edit_mode and trigger_id == 'node-graph' and click_data:
+        try:
+            point = click_data['points'][0]
+            cx = float(point['x'])
+            cy = float(point['y'])
+        except Exception:
+            cx = None
+            cy = None
+
+        if cx is not None and cy is not None:
+            # assign to current edit index
+            if 0 <= edit_index < 35:
+                node_positions[edit_index] = [cx, cy]
+                edit_index += 1
+
+            # if finished editing all nodes, save and exit edit mode
+            if edit_index >= 35:
+                edit_mode = False
+                # persist positions to file
+                save_positions_to_file(node_positions)
+                # update runtime node_data
+                for i, p in enumerate(node_positions):
+                    if p is not None:
+                        node_data.at[i, 'x'] = p[0]
+                        node_data.at[i, 'y'] = p[1]
+
     # Create figure
-    fig = create_figure(active_nodes)
+    fig = create_figure(active_nodes, node_positions=node_positions, edit_mode=edit_mode, edit_index=edit_index)
     
-    return fig, input_value, active_nodes, new_cycle_active, cycle_disabled
+    return fig, input_value, active_nodes, new_cycle_active, cycle_disabled, edit_mode, edit_index, node_positions
 
 # ============================================
 # RUN THE APP
