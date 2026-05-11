@@ -234,9 +234,9 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
 
     In normal mode:  grey dots for all nodes, white rectangles for active ones.
     In edit mode:
-      - grey dots for unplaced nodes (positions from node_positions or defaults)
+      - invisible dense mesh covering the whole canvas to capture any click
       - green dots for already-placed nodes (index < edit_index)
-      - yellow pulsing marker on the node currently being placed (edit_index)
+      - yellow marker showing where the next node will land
       - white rectangles are hidden (active_nodes ignored while editing)
     """
     fig = go.Figure()
@@ -244,6 +244,24 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
     positions = node_positions if node_positions else default_positions()
 
     if edit_mode:
+        # ── Dense invisible click-capture mesh ────────────────────────────
+        # A fine grid of transparent points filling the entire plot area.
+        # Plotly snaps clickData to the nearest point, giving us free-form
+        # coordinates anywhere on the canvas.
+        mesh_xs, mesh_ys = [], []
+        for gx in np.arange(-12, 12.1, 0.5):   # step 0.5 → ~48 cols
+            for gy in np.arange(-7, 12.1, 0.5): # step 0.5 → ~38 rows
+                mesh_xs.append(round(float(gx), 2))
+                mesh_ys.append(round(float(gy), 2))
+
+        fig.add_trace(go.Scatter(
+            x=mesh_xs, y=mesh_ys,
+            mode='markers',
+            marker=dict(size=12, color='rgba(0,0,0,0)', opacity=0),
+            hoverinfo='none',
+            showlegend=False,
+            name='__clickmesh__'
+        ))
         # ── Edit mode rendering ───────────────────────────────────────────
         # Split nodes into: placed, pending (next), and remaining
         placed_xs, placed_ys, placed_labels = [], [], []
