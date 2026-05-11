@@ -269,6 +269,24 @@ def create_figure(active_nodes):
         hoverlabel=dict(bgcolor='#2d2d2d', font=dict(color='white')),
         showlegend=False
     ))
+
+    # Add an invisible click-catcher grid so clicks anywhere can be captured.
+    # Grid spans the visible axis range with moderate density to capture arbitrary clicks.
+    x_min = min(X_COORDS) - 3
+    x_max = max(X_COORDS) + 3
+    y_min = min(Y_COORDS) - 3
+    y_max = max(Y_COORDS) + 3
+    x_vals = list(np.arange(x_min, x_max + 0.001, 0.5))
+    y_vals = list(np.arange(y_min, y_max + 0.001, 0.5))
+    gx, gy = np.meshgrid(x_vals, y_vals)
+    fig.add_trace(go.Scatter(
+        x=gx.ravel().tolist(),
+        y=gy.ravel().tolist(),
+        mode='markers',
+        marker=dict(size=6, color='rgba(0,0,0,0)'),
+        hoverinfo='none',
+        showlegend=False
+    ))
     
     # Black background layout
     fig.update_layout(
@@ -300,12 +318,13 @@ def create_figure(active_nodes):
      Input('stop-button', 'n_clicks'),
      Input('reset-button', 'n_clicks'),
     Input('cycle-interval', 'n_intervals'),
-    Input('node-graph', 'relayoutData')],
+    Input('node-graph', 'relayoutData'),
+    Input('node-graph', 'clickData')],
     [State('active-nodes', 'data'),
      State('cycle-active', 'data')]
 )
 def update_system(input_value, random_clicks, cycle_clicks, stop_clicks, 
-               reset_clicks, interval, relayout_data, active_nodes, cycle_active):
+               reset_clicks, interval, relayout_data, click_data, active_nodes, cycle_active):
     
     ctx = dash.callback_context
     triggered = ctx.triggered[0]['prop_id'] if ctx.triggered else None
@@ -332,25 +351,45 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
             active_nodes.append(0)
             input_value = NODE_TO_INPUT[0]
     
-    # Handle relayout (dragging) from the graph - update node positions and persist
-    if trigger_id == 'node-graph' and relayout_data:
-        updates = {}
-        for k, v in relayout_data.items():
-            m = re.match(r"shapes\[(\d+)\]\\.(x0|x1|y0|y1)", k)
-            if m:
-                idx = int(m.group(1))
-                prop = m.group(2)
-                updates.setdefault(idx, {})[prop] = v
-        for idx, props in updates.items():
-            if all(p in props for p in ('x0', 'x1', 'y0', 'y1')) and 0 <= idx < NUM_NODES:
-                cx = (props['x0'] + props['x1']) / 2.0
-                cy = (props['y0'] + props['y1']) / 2.0
-                # update in-memory positions
-                fixed_positions[idx] = (cx, cy)
-                node_data.at[idx, 'x'] = cx
-                node_data.at[idx, 'y'] = cy
-        # persist positions
-        save_positions(fixed_positions)
+    # Handle graph interactions from the graph (dragging or click-to-place)
+    if trigger_id == 'node-graph':
+        # Dragging (relayoutData)
+        if relayout_data:
+            updates = {}
+            for k, v in relayout_data.items():
+                m = re.match(r"shapes\[(\d+)\]\.(x0|x1|y0|y1)", k)
+                if m:
+                    idx = int(m.group(1))
+                    prop = m.group(2)
+                    updates.setdefault(idx, {})[prop] = v
+            for idx, props in updates.items():
+                if all(p in props for p in ('x0', 'x1', 'y0', 'y1')) and 0 <= idx < NUM_NODES:
+                    cx = (props['x0'] + props['x1']) / 2.0
+                    cy = (props['y0'] + props['y1']) / 2.0
+                    # update in-memory positions
+                    fixed_positions[idx] = (cx, cy)
+                    node_data.at[idx, 'x'] = cx
+                    node_data.at[idx, 'y'] = cy
+            # persist positions
+            save_positions(fixed_positions)
+
+        # Click-to-place: use current `node-input` to pick which node to move
+        elif click_data and 'points' in click_data and len(click_data['points']) > 0:
+            pt = click_data['points'][0]
+            if 'x' in pt and 'y' in pt and input_value is not None:
+                try:
+                    iv = int(input_value)
+                    if iv in INPUT_TO_NODE:
+                        node_id = INPUT_TO_NODE[iv]
+                        if 0 <= node_id < NUM_NODES:
+                            cx = float(pt['x'])
+                            cy = float(pt['y'])
+                            fixed_positions[node_id] = (cx, cy)
+                            node_data.at[node_id, 'x'] = cx
+                            node_data.at[node_id, 'y'] = cy
+                            save_positions(fixed_positions)
+                except Exception:
+                    pass
 
     # Handle reset button
     if trigger_id == 'reset-button' and reset_clicks and reset_clicks > 0:
@@ -383,9 +422,9 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     
     # Handle cycle interval
     elif trigger_id == 'cycle-interval' and new_cycle_active:
-        if len(active_nodes) < 40:
+        if len(active_nodes) < NUM_NODES:
             # Find next unactivated node
-            for i in range(40):
+            for i in range(NUM_NODES):
                 if i not in active_nodes:
                     active_nodes.append(i)
                     input_value = NODE_TO_INPUT[i]
