@@ -297,7 +297,6 @@ def create_figure(active_nodes):
         height=550,
         margin=dict(l=10, r=10, t=10, b=10),
         showlegend=False,
-        editable=True,
         uirevision='nodes'
     )
     
