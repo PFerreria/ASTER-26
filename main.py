@@ -166,7 +166,8 @@ app.layout = html.Div(className='container', children=[
         dcc.Graph(
             id='node-graph', 
             style={'height': '600px', 'backgroundColor': '#000000'},
-            config={'displayModeBar': False}
+            config={'displayModeBar': False, 'toImageButtonOptions': {}, 
+                    'modeBarButtonsToRemove': ['lasso2d', 'select2d']}
         ),
     ]),
     
@@ -216,26 +217,51 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
     """Create graph with white rectangle nodes appearing on activation"""
     fig = go.Figure()
     
-    # Add base nodes (small gray dots) using node_positions if provided
-    if node_positions:
-        xs = [p[0] for p in node_positions if p is not None]
-        ys = [p[1] for p in node_positions if p is not None]
+    # In edit mode: show placed nodes AND empty slots
+    if edit_mode:
+        # Show already-placed nodes in green
+        placed_xs = []
+        placed_ys = []
+        for i in range(edit_index):
+            if node_positions and node_positions[i] is not None:
+                placed_xs.append(node_positions[i][0])
+                placed_ys.append(node_positions[i][1])
+        
+        if placed_xs:
+            fig.add_trace(go.Scatter(
+                x=placed_xs,
+                y=placed_ys,
+                mode='markers',
+                marker=dict(
+                    size=10,
+                    color='#00ff00',
+                    line=dict(width=2, color='#00aa00')
+                ),
+                hoverinfo='text',
+                text=[f"Placed node {i+1}" for i in range(len(placed_xs))],
+                showlegend=False
+            ))
     else:
-        xs = list(node_data['x'])
-        ys = list(node_data['y'])
+        # Normal mode: show base nodes from node_positions or defaults
+        if node_positions:
+            xs = [p[0] for p in node_positions if p is not None]
+            ys = [p[1] for p in node_positions if p is not None]
+        else:
+            xs = list(node_data['x'])
+            ys = list(node_data['y'])
 
-    fig.add_trace(go.Scatter(
-        x=xs,
-        y=ys,
-        mode='markers',
-        marker=dict(
-            size=6,
-            color='#404040',
-            line=dict(width=0)
-        ),
-        hoverinfo='none',
-        showlegend=False
-    ))
+        fig.add_trace(go.Scatter(
+            x=xs,
+            y=ys,
+            mode='markers',
+            marker=dict(
+                size=6,
+                color='#404040',
+                line=dict(width=0)
+            ),
+            hoverinfo='none',
+            showlegend=False
+        ))
     
     # Add white rectangles for active nodes
     if active_nodes:
@@ -277,21 +303,23 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
             ))
     
     # Black background layout
-    fig.update_layout(
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-12, 12]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-12, 12]),
-        plot_bgcolor='#000000',
-        paper_bgcolor='#000000',
-        height=550,
-        margin=dict(l=10, r=10, t=10, b=10),
-        showlegend=False
-    )
+    layout_kwargs = {
+        'xaxis': dict(showgrid=False, zeroline=False, showticklabels=False, range=[-12, 12]),
+        'yaxis': dict(showgrid=False, zeroline=False, showticklabels=False, range=[-12, 12]),
+        'plot_bgcolor': '#000000',
+        'paper_bgcolor': '#000000',
+        'height': 550,
+        'margin': dict(l=10, r=10, t=10, b=10),
+        'showlegend': False,
+        'dragmode': False if edit_mode else 'zoom'  # Disable drag when editing
+    }
+    fig.update_layout(**layout_kwargs)
     
     # If in edit mode, add an annotation to show progress
     if edit_mode:
         fig.add_annotation(
             x=0, y=11, xref='x', yref='y', showarrow=False,
-            text=f"Editing nodes: click to set node {edit_index + 1} / 35",
+            text=f"Editing nodes: click to place node {edit_index + 1} / 35",
             font=dict(color='yellow', size=12), bgcolor='#222'
         )
     
