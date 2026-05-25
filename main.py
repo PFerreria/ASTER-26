@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import dash
 from dash import dcc, html, Input, Output, State
 import plotly.graph_objects as go
@@ -6,6 +7,68 @@ import numpy as np
 import random
 import os
 import json
+import threading
+import time
+
+# ============================================
+# SENSOR INTEGRATION
+# ============================================
+SENSORS_AVAILABLE = False
+try:
+    from DFRobot_BloodOxygen_S import DFRobot_BloodOxygen_S_i2c as DFRobot_BloodOxygen_S_I2C
+    SENSORS_AVAILABLE = True
+except ImportError:
+    pass
+
+SENSOR_CONFIGS = [
+    {"label": "Sensor-1", "bus": 1, "address": 0x57},
+    {"label": "Sensor-2", "bus": 3, "address": 0x57},
+]
+
+_sensor_lock     = threading.Lock()
+_sensor_readings = {"bpm1": -1, "bpm2": -1, "spo2_1": -1, "spo2_2": -1}
+_sensor_stop     = threading.Event()
+
+
+def _sensor_worker(cfg, bpm_key, spo2_key):
+    """Continuously read one sensor and push values into the shared dict."""
+    label = cfg["label"]
+    try:
+        sensor = DFRobot_BloodOxygen_S_I2C(cfg["bus"], cfg["address"])
+        # Retry begin() until the sensor responds
+        while not _sensor_stop.is_set():
+            if sensor.begin():
+                break
+            print(f"[{label}] begin() failed — retrying in 2 s …")
+            time.sleep(2)
+        if _sensor_stop.is_set():
+            return
+        sensor.sensor_start_collect()
+        print(f"[{label}] Sensor ready.")
+        while not _sensor_stop.is_set():
+            sensor.get_heartbeat_SPO2()
+            with _sensor_lock:
+                _sensor_readings[bpm_key]  = sensor.heartbeat
+                _sensor_readings[spo2_key] = sensor.SPO2
+            time.sleep(1.0)
+        sensor.sensor_end_collect()
+    except Exception as exc:
+        print(f"[{label}] Error: {exc}")
+
+
+def start_sensor_threads():
+    """Start both sensor background threads (no-op if library unavailable)."""
+    if not SENSORS_AVAILABLE:
+        print("Sensor library not found — Sensor Mode button will be disabled.")
+        return
+    for cfg, (bk, sk) in zip(SENSOR_CONFIGS,
+                               [("bpm1", "spo2_1"), ("bpm2", "spo2_2")]):
+        threading.Thread(
+            target=_sensor_worker, args=(cfg, bk, sk),
+            daemon=True, name=cfg["label"]
+        ).start()
+    print("Sensor threads started.")
+
 
 # ============================================
 # CONFIGURATION
@@ -47,6 +110,33 @@ node_data = pd.DataFrame({
 })
 
 # ============================================
+# HELPER: BPM → NODE
+# ============================================
+def bpm_to_node(bpm, active_nodes):
+    """
+    Map a BPM reading to the best node to activate.
+
+    Direct mapping: BPM 60 → node 0, BPM 94 → node 34 (same as
+    INPUT_TO_NODE).  Values outside 60–94 are clamped to the edges.
+
+    If the exact-match node is already active, the nearest currently-
+    inactive node is returned instead — this prevents the display from
+    stalling when heart rate stays constant.
+
+    Returns None when BPM is invalid (≤ 0) or all 35 nodes are active.
+    """
+    if bpm is None or bpm <= 0:
+        return None
+    clamped = max(60, min(94, int(round(bpm))))
+    target  = INPUT_TO_NODE[clamped]
+    if target not in active_nodes:
+        return target
+    inactive = [i for i in range(35) if i not in active_nodes]
+    if not inactive:
+        return None
+    return min(inactive, key=lambda n: abs(n - target))
+
+# ============================================
 # CSS
 # ============================================
 app.index_string = '''
@@ -75,7 +165,9 @@ app.index_string = '''
                 margin-bottom: 15px;
                 border: 1px solid #404040;
                 display: flex;
-                justify-content: center;
+                flex-direction: column;
+                align-items: center;
+                gap: 10px;
             }
             .input-group {
                 display: flex;
@@ -108,7 +200,31 @@ app.index_string = '''
                 color: white;
                 min-width: 70px;
             }
-            button:hover { background: #0056b3; }
+            button:hover  { background: #0056b3; }
+            button:disabled { background: #444; color: #777; cursor: not-allowed; }
+
+            /* Sensor button — green idle, bright green when active */
+            #sensor-button         { background: #1a5c1a; }
+            #sensor-button:hover   { background: #236b23; }
+            #sensor-button:disabled { background: #444; color: #777; }
+
+            /* BPM readout strip */
+            .bpm-display {
+                font-family: monospace;
+                font-size: 13px;
+                color: #aaffaa;
+                background: #0d1f0d;
+                border: 1px solid #2a5c2a;
+                border-radius: 4px;
+                padding: 4px 16px;
+                letter-spacing: 0.05em;
+                min-width: 260px;
+                text-align: center;
+            }
+            .bpm-display.sensor-active {
+                border-color: #28a745;
+                color: #00ff88;
+            }
 
             /* Edit-mode status banner */
             .edit-status {
@@ -162,12 +278,24 @@ app.layout = html.Div(className='container', children=[
                 min=60, max=94, step=1,
                 value=60
             ),
-            html.Button('Random',     id='random-button', n_clicks=0),
-            html.Button('Edit nodes', id='edit-button',   n_clicks=0),
-            html.Button('Start Loop', id='cycle-button',  n_clicks=0),
-            html.Button('Stop',       id='stop-button',   n_clicks=0),
-            html.Button('Reset',      id='reset-button',  n_clicks=0),
+            html.Button('Random',      id='random-button', n_clicks=0),
+            html.Button('Edit nodes',  id='edit-button',   n_clicks=0),
+            html.Button('Start Loop',  id='cycle-button',  n_clicks=0),
+            html.Button('Stop',        id='stop-button',   n_clicks=0),
+            html.Button('Reset',       id='reset-button',  n_clicks=0),
+            html.Button(
+                'Sensor Mode',
+                id='sensor-button',
+                n_clicks=0,
+                disabled=not SENSORS_AVAILABLE,
+                title=('Toggle live heart-rate sensor input'
+                       if SENSORS_AVAILABLE
+                       else 'DFRobot library not found — sensor unavailable'),
+            ),
         ]),
+        # Live BPM readout (always visible, content changes with sensor mode)
+        html.Div(id='bpm-display', className='bpm-display',
+                 children='Sensor: off'),
     ]),
 
     # Edit-mode status banner (shown/hidden via className)
@@ -189,7 +317,11 @@ app.layout = html.Div(className='container', children=[
     dcc.Store(id='edit-mode',             data=False),
     dcc.Store(id='edit-index',            data=0),
     dcc.Store(id='node-positions-store',  data=None),
+    dcc.Store(id='sensor-mode',           data=False),
+
+    # Intervals
     dcc.Interval(id='cycle-interval',     interval=1000, disabled=True),
+    dcc.Interval(id='sensor-interval',    interval=1000, disabled=True),
 ])
 
 # ============================================
@@ -245,12 +377,9 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
 
     if edit_mode:
         # ── Dense invisible click-capture mesh ────────────────────────────
-        # A fine grid of transparent points filling the entire plot area.
-        # Plotly snaps clickData to the nearest point, giving us free-form
-        # coordinates anywhere on the canvas.
         mesh_xs, mesh_ys = [], []
-        for gx in np.arange(-12, 12.1, 0.5):   # step 0.5 → ~48 cols
-            for gy in np.arange(-7, 12.1, 0.5): # step 0.5 → ~38 rows
+        for gx in np.arange(-12, 12.1, 0.5):
+            for gy in np.arange(-7, 12.1, 0.5):
                 mesh_xs.append(round(float(gx), 2))
                 mesh_ys.append(round(float(gy), 2))
 
@@ -263,7 +392,6 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
             name='__clickmesh__'
         ))
         # ── Edit mode rendering ───────────────────────────────────────────
-        # Split nodes into: placed, pending (next), and remaining
         placed_xs, placed_ys, placed_labels = [], [], []
         next_xs, next_ys = [], []
         remaining_xs, remaining_ys = [], []
@@ -271,7 +399,6 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
         for i in range(35):
             p = positions[i]
             if p is None:
-                # Not yet placed — use default position as a ghost
                 gx, gy = float(node_data.at[i, 'x']), float(node_data.at[i, 'y'])
                 if i == edit_index:
                     next_xs.append(gx)
@@ -281,7 +408,6 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
                     remaining_ys.append(gy)
             else:
                 if i < edit_index:
-                    # Already placed
                     placed_xs.append(p[0])
                     placed_ys.append(p[1])
                     placed_labels.append(f"Node {i} ✓")
@@ -292,7 +418,6 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
                     remaining_xs.append(p[0])
                     remaining_ys.append(p[1])
 
-        # Remaining (unplaced, not current) — dim grey
         if remaining_xs:
             fig.add_trace(go.Scatter(
                 x=remaining_xs, y=remaining_ys,
@@ -301,7 +426,6 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
                 hoverinfo='none', showlegend=False
             ))
 
-        # Placed nodes — bright green
         if placed_xs:
             fig.add_trace(go.Scatter(
                 x=placed_xs, y=placed_ys,
@@ -314,7 +438,6 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
                 hoverinfo='text', showlegend=False
             ))
 
-        # Next node to place — bright yellow, larger
         if next_xs:
             fig.add_trace(go.Scatter(
                 x=next_xs, y=next_ys,
@@ -325,7 +448,6 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
                 hoverinfo='none', showlegend=False
             ))
 
-        # Annotation: instruction
         label_text = (
             f"Click to place node <b>{edit_index}</b> "
             f"(input {NODE_TO_INPUT.get(edit_index, '?')})  —  "
@@ -410,24 +532,33 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
      Output('edit-index',           'data'),
      Output('node-positions-store', 'data'),
      Output('edit-status-banner',   'className'),
-     Output('graph-container',      'className')],
-    [Input('node-input',     'value'),
-     Input('random-button',  'n_clicks'),
-     Input('cycle-button',   'n_clicks'),
-     Input('stop-button',    'n_clicks'),
-     Input('reset-button',   'n_clicks'),
-     Input('cycle-interval', 'n_intervals'),
-     Input('edit-button',    'n_clicks'),
-     Input('node-graph',     'clickData')],
+     Output('graph-container',      'className'),
+     Output('sensor-mode',          'data'),
+     Output('sensor-interval',      'disabled'),
+     Output('bpm-display',          'children'),
+     Output('bpm-display',          'className')],
+    [Input('node-input',      'value'),
+     Input('random-button',   'n_clicks'),
+     Input('cycle-button',    'n_clicks'),
+     Input('stop-button',     'n_clicks'),
+     Input('reset-button',    'n_clicks'),
+     Input('cycle-interval',  'n_intervals'),
+     Input('edit-button',     'n_clicks'),
+     Input('node-graph',      'clickData'),
+     Input('sensor-button',   'n_clicks'),
+     Input('sensor-interval', 'n_intervals')],
     [State('active-nodes',          'data'),
      State('cycle-active',          'data'),
      State('edit-mode',             'data'),
      State('edit-index',            'data'),
-     State('node-positions-store',  'data')]
+     State('node-positions-store',  'data'),
+     State('sensor-mode',           'data')]
 )
 def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
-                  reset_clicks, interval, edit_clicks, click_data,
-                  active_nodes, cycle_active, edit_mode, edit_index, node_positions):
+                  reset_clicks, cycle_interval, edit_clicks, click_data,
+                  sensor_clicks, sensor_interval,
+                  active_nodes, cycle_active, edit_mode, edit_index,
+                  node_positions, sensor_mode):
 
     ctx = dash.callback_context
     trigger_id = (ctx.triggered[0]['prop_id'].split('.')[0]
@@ -440,9 +571,13 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
         edit_mode = False
     if edit_index is None:
         edit_index = 0
+    if sensor_mode is None:
+        sensor_mode = False
 
-    new_cycle_active = bool(cycle_active)
-    cycle_disabled   = not new_cycle_active
+    new_cycle_active  = bool(cycle_active)
+    cycle_disabled    = not new_cycle_active
+    new_sensor_mode   = bool(sensor_mode)
+    sensor_disabled   = not new_sensor_mode
 
     # Initialise positions from file or defaults on first load
     if node_positions is None:
@@ -458,6 +593,8 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
         cycle_disabled   = True
         edit_mode        = False
         edit_index       = 0
+        new_sensor_mode  = False
+        sensor_disabled  = True
 
     elif trigger_id == 'random-button':
         input_value      = int(np.random.randint(60, 95))
@@ -470,6 +607,8 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     elif trigger_id == 'cycle-button':
         new_cycle_active = True
         cycle_disabled   = False
+        new_sensor_mode  = False   # mutually exclusive with sensor mode
+        sensor_disabled  = True
         if not active_nodes:
             active_nodes.append(0)
             input_value = NODE_TO_INPUT[0]
@@ -477,19 +616,29 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     elif trigger_id == 'stop-button':
         new_cycle_active = False
         cycle_disabled   = True
+        new_sensor_mode  = False
+        sensor_disabled  = True
 
     elif trigger_id == 'edit-button':
-        # Enter edit mode — wipe stored positions so user places all 35 fresh
         edit_mode        = True
         edit_index       = 0
         node_positions   = [None] * 35
         active_nodes     = []
         new_cycle_active = False
         cycle_disabled   = True
+        new_sensor_mode  = False
+        sensor_disabled  = True
+
+    elif trigger_id == 'sensor-button':
+        # Toggle sensor mode; mutually exclusive with cycle loop
+        new_sensor_mode  = not new_sensor_mode
+        sensor_disabled  = not new_sensor_mode
+        if new_sensor_mode:
+            new_cycle_active = False
+            cycle_disabled   = True
 
     elif trigger_id == 'cycle-interval' and new_cycle_active:
         if len(active_nodes) >= 35:
-            # Full cycle done — restart
             active_nodes = [0]
             input_value  = NODE_TO_INPUT[0]
         else:
@@ -498,6 +647,18 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
                     active_nodes.append(i)
                     input_value = NODE_TO_INPUT[i]
                     break
+
+    elif trigger_id == 'sensor-interval' and new_sensor_mode:
+        # Read latest BPM from both sensors; activate matching nodes
+        with _sensor_lock:
+            b1 = _sensor_readings["bpm1"]
+            b2 = _sensor_readings["bpm2"]
+
+        for bpm in (b1, b2):
+            node_id = bpm_to_node(bpm, active_nodes)
+            if node_id is not None and node_id not in active_nodes:
+                active_nodes.append(node_id)
+                input_value = NODE_TO_INPUT[node_id]
 
     elif trigger_id == 'node-input' and input_value is not None and not edit_mode:
         input_value = max(60, min(94, int(input_value)))
@@ -517,15 +678,13 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
             cx = cy = None
 
         if cx is not None and 0 <= edit_index < 35:
-            node_positions = list(node_positions)   # ensure mutable copy
+            node_positions = list(node_positions)
             node_positions[edit_index] = [cx, cy]
             edit_index += 1
 
-            # All 35 placed → save and exit edit mode
             if edit_index >= 35:
                 edit_mode = False
                 save_positions_to_file(node_positions)
-                # Sync runtime node_data so rectangle rendering uses new coords
                 for i, p in enumerate(node_positions):
                     if p:
                         node_data.at[i, 'x'] = p[0]
@@ -533,6 +692,19 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
 
     if input_value is None:
         input_value = 60
+
+    # ── BPM display ───────────────────────────────────────────────────────
+    if new_sensor_mode:
+        with _sensor_lock:
+            b1 = _sensor_readings["bpm1"]
+            b2 = _sensor_readings["bpm2"]
+        s1 = f"{b1} bpm" if b1 > 0 else "—"
+        s2 = f"{b2} bpm" if b2 > 0 else "—"
+        bpm_text  = f"♥  S1: {s1}  |  S2: {s2}"
+        bpm_class = "bpm-display sensor-active"
+    else:
+        bpm_text  = "Sensor: off"
+        bpm_class = "bpm-display"
 
     # ── UI class helpers ──────────────────────────────────────────────────
     banner_class    = 'edit-status active' if edit_mode else 'edit-status'
@@ -546,11 +718,13 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     )
 
     return (fig, input_value, active_nodes, new_cycle_active, cycle_disabled,
-            edit_mode, edit_index, node_positions, banner_class, container_class)
+            edit_mode, edit_index, node_positions, banner_class, container_class,
+            new_sensor_mode, sensor_disabled, bpm_text, bpm_class)
 
 
 # ============================================
 # RUN THE APP
 # ============================================
 if __name__ == '__main__':
-    app.run(debug=True, host='127.0.0.1', port=8050)
+    start_sensor_threads()
+    app.run(debug=False, host='127.0.0.1', port=8050, use_reloader=False)
