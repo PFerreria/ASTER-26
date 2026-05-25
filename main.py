@@ -35,7 +35,6 @@ def _sensor_worker(cfg, bpm_key, spo2_key):
     label = cfg["label"]
     try:
         sensor = DFRobot_BloodOxygen_S_I2C(cfg["bus"], cfg["address"])
-        # Retry begin() until the sensor responds
         while not _sensor_stop.is_set():
             if sensor.begin():
                 break
@@ -98,8 +97,8 @@ for node_id, coords in CUSTOM_NODE_POSITIONS.items():
 
 fixed_positions = {i: NODE_POSITIONS[i] for i in range(35)}
 
-random_widths  = {i: random.randint(100, 300) for i in range(35)}
-random_heights = {i: random.randint(100, 300) for i in range(35)}
+random_widths  = {i: random.randint(300, 600) for i in range(35)}
+random_heights = {i: random.randint(300, 600) for i in range(35)}
 
 node_data = pd.DataFrame({
     'id':     range(35),
@@ -113,18 +112,6 @@ node_data = pd.DataFrame({
 # HELPER: BPM → NODE
 # ============================================
 def bpm_to_node(bpm, active_nodes):
-    """
-    Map a BPM reading to the best node to activate.
-
-    Direct mapping: BPM 60 → node 0, BPM 94 → node 34 (same as
-    INPUT_TO_NODE).  Values outside 60–94 are clamped to the edges.
-
-    If the exact-match node is already active, the nearest currently-
-    inactive node is returned instead — this prevents the display from
-    stalling when heart rate stays constant.
-
-    Returns None when BPM is invalid (≤ 0) or all 35 nodes are active.
-    """
     if bpm is None or bpm <= 0:
         return None
     clamped = max(60, min(94, int(round(bpm))))
@@ -158,16 +145,22 @@ app.index_string = '''
                 max-width: 1200px;
                 margin: 0 auto;
             }
+            .top-bar {
+                position: relative;
+                margin-bottom: 15px;
+            }
             .control-panel {
                 background: #2d2d2d;
                 padding: 15px;
                 border-radius: 8px;
-                margin-bottom: 15px;
                 border: 1px solid #404040;
                 display: flex;
                 flex-direction: column;
                 align-items: center;
                 gap: 10px;
+            }
+            .control-panel.hidden {
+                display: none;
             }
             .input-group {
                 display: flex;
@@ -226,6 +219,23 @@ app.index_string = '''
                 color: #00ff88;
             }
 
+            /* Hide/show menu toggle button */
+            .menu-toggle {
+                position: absolute;
+                top: 0;
+                right: 0;
+                background: #2d2d2d;
+                border: 1px solid #555;
+                color: #aaa;
+                font-size: 12px;
+                padding: 4px 10px;
+                border-radius: 4px;
+                cursor: pointer;
+                min-width: auto;
+                z-index: 10;
+            }
+            .menu-toggle:hover { background: #3d3d3d; color: #fff; }
+
             /* Edit-mode status banner */
             .edit-status {
                 display: none;
@@ -268,37 +278,41 @@ app.index_string = '''
 # ============================================
 app.layout = html.Div(className='container', children=[
 
-    # Control Panel
-    html.Div(className='control-panel', children=[
-        html.Div(className='input-group', children=[
-            html.Label("Input:", style={'fontWeight': 'bold'}),
-            dcc.Input(
-                id='node-input',
-                type='number',
-                min=60, max=94, step=1,
-                value=60
-            ),
-            html.Button('Random',      id='random-button', n_clicks=0),
-            html.Button('Edit nodes',  id='edit-button',   n_clicks=0),
-            html.Button('Start Loop',  id='cycle-button',  n_clicks=0),
-            html.Button('Stop',        id='stop-button',   n_clicks=0),
-            html.Button('Reset',       id='reset-button',  n_clicks=0),
-            html.Button(
-                'Sensor Mode',
-                id='sensor-button',
-                n_clicks=0,
-                disabled=not SENSORS_AVAILABLE,
-                title=('Toggle live heart-rate sensor input'
-                       if SENSORS_AVAILABLE
-                       else 'DFRobot library not found — sensor unavailable'),
-            ),
+    # Top bar: toggle button + collapsible control panel
+    html.Div(className='top-bar', children=[
+        html.Button('▲ Hide Menu', id='menu-toggle-button', n_clicks=0,
+                    className='menu-toggle'),
+        html.Div(id='control-panel-div', className='control-panel', children=[
+            html.Div(className='input-group', children=[
+                html.Label("Input:", style={'fontWeight': 'bold'}),
+                dcc.Input(
+                    id='node-input',
+                    type='number',
+                    min=60, max=94, step=1,
+                    value=60
+                ),
+                html.Button('Random',      id='random-button', n_clicks=0),
+                html.Button('Edit nodes',  id='edit-button',   n_clicks=0),
+                html.Button('Start Loop',  id='cycle-button',  n_clicks=0),
+                html.Button('Stop',        id='stop-button',   n_clicks=0),
+                html.Button('Reset',       id='reset-button',  n_clicks=0),
+                html.Button(
+                    'Sensor Mode',
+                    id='sensor-button',
+                    n_clicks=0,
+                    disabled=not SENSORS_AVAILABLE,
+                    title=('Toggle live heart-rate sensor input'
+                           if SENSORS_AVAILABLE
+                           else 'DFRobot library not found — sensor unavailable'),
+                ),
+            ]),
+            # Live BPM readout
+            html.Div(id='bpm-display', className='bpm-display',
+                     children='Sensor: off'),
         ]),
-        # Live BPM readout (always visible, content changes with sensor mode)
-        html.Div(id='bpm-display', className='bpm-display',
-                 children='Sensor: off'),
     ]),
 
-    # Edit-mode status banner (shown/hidden via className)
+    # Edit-mode status banner
     html.Div(id='edit-status-banner', className='edit-status',
              children="Edit mode — click on the graph to place each node in order"),
 
@@ -325,6 +339,25 @@ app.layout = html.Div(className='container', children=[
 ])
 
 # ============================================
+# CLIENTSIDE CALLBACK: HIDE/SHOW MENU
+# ============================================
+app.clientside_callback(
+    """
+    function(n) {
+        var panel = document.getElementById('control-panel-div');
+        var btn   = document.getElementById('menu-toggle-button');
+        if (!panel || !btn) return window.dash_clientside.no_update;
+        var hidden = panel.classList.toggle('hidden');
+        btn.textContent = hidden ? '▼ Show Menu' : '▲ Hide Menu';
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output('menu-toggle-button', 'n_clicks'),
+    Input('menu-toggle-button', 'n_clicks'),
+    prevent_initial_call=True
+)
+
+# ============================================
 # HELPER FUNCTIONS
 # ============================================
 def _positions_file_path():
@@ -336,13 +369,11 @@ def _positions_file_path():
 
 
 def save_positions_to_file(positions):
-    """Save node positions list to JSON beside this script."""
     with open(_positions_file_path(), 'w') as f:
         json.dump(positions, f, indent=2)
 
 
 def load_positions_from_file():
-    """Return saved positions (list of [x,y]) or None."""
     path = _positions_file_path()
     if not os.path.exists(path):
         return None
@@ -361,22 +392,12 @@ def default_positions():
 
 
 def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index=0):
-    """
-    Render the node graph.
-
-    In normal mode:  grey dots for all nodes, white rectangles for active ones.
-    In edit mode:
-      - invisible dense mesh covering the whole canvas to capture any click
-      - green dots for already-placed nodes (index < edit_index)
-      - yellow marker showing where the next node will land
-      - white rectangles are hidden (active_nodes ignored while editing)
-    """
     fig = go.Figure()
 
     positions = node_positions if node_positions else default_positions()
 
     if edit_mode:
-        # ── Dense invisible click-capture mesh ────────────────────────────
+        # Dense invisible click-capture mesh
         mesh_xs, mesh_ys = [], []
         for gx in np.arange(-12, 12.1, 0.5):
             for gy in np.arange(-7, 12.1, 0.5):
@@ -391,7 +412,7 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
             showlegend=False,
             name='__clickmesh__'
         ))
-        # ── Edit mode rendering ───────────────────────────────────────────
+
         placed_xs, placed_ys, placed_labels = [], [], []
         next_xs, next_ys = [], []
         remaining_xs, remaining_ys = [], []
@@ -462,7 +483,6 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
         )
 
     else:
-        # ── Normal mode rendering ─────────────────────────────────────────
         xs = [p[0] if p else node_data.at[i, 'x'] for i, p in enumerate(positions)]
         ys = [p[1] if p else node_data.at[i, 'y'] for i, p in enumerate(positions)]
 
@@ -505,7 +525,6 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
                     showlegend=False
                 ))
 
-    # Shared layout
     fig.update_layout(
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-12, 12]),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-7, 12]),
@@ -564,7 +583,6 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     trigger_id = (ctx.triggered[0]['prop_id'].split('.')[0]
                   if ctx.triggered else None)
 
-    # ── Defaults ──────────────────────────────────────────────────────────
     if active_nodes is None:
         active_nodes = []
     if edit_mode is None:
@@ -579,12 +597,9 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     new_sensor_mode   = bool(sensor_mode)
     sensor_disabled   = not new_sensor_mode
 
-    # Initialise positions from file or defaults on first load
     if node_positions is None:
         loaded = load_positions_from_file()
         node_positions = loaded if loaded else default_positions()
-
-    # ── Button / trigger handling ─────────────────────────────────────────
 
     if trigger_id == 'reset-button':
         active_nodes     = []
@@ -607,7 +622,7 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     elif trigger_id == 'cycle-button':
         new_cycle_active = True
         cycle_disabled   = False
-        new_sensor_mode  = False   # mutually exclusive with sensor mode
+        new_sensor_mode  = False
         sensor_disabled  = True
         if not active_nodes:
             active_nodes.append(0)
@@ -630,7 +645,6 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
         sensor_disabled  = True
 
     elif trigger_id == 'sensor-button':
-        # Toggle sensor mode; mutually exclusive with cycle loop
         new_sensor_mode  = not new_sensor_mode
         sensor_disabled  = not new_sensor_mode
         if new_sensor_mode:
@@ -649,7 +663,6 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
                     break
 
     elif trigger_id == 'sensor-interval' and new_sensor_mode:
-        # Read latest BPM from both sensors; activate matching nodes
         with _sensor_lock:
             b1 = _sensor_readings["bpm1"]
             b2 = _sensor_readings["bpm2"]
@@ -668,7 +681,6 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
         new_cycle_active = False
         cycle_disabled   = True
 
-    # ── Graph click: place node in edit mode ──────────────────────────────
     if edit_mode and trigger_id == 'node-graph' and click_data:
         try:
             point = click_data['points'][0]
@@ -693,7 +705,6 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     if input_value is None:
         input_value = 60
 
-    # ── BPM display ───────────────────────────────────────────────────────
     if new_sensor_mode:
         with _sensor_lock:
             b1 = _sensor_readings["bpm1"]
@@ -706,7 +717,6 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
         bpm_text  = "Sensor: off"
         bpm_class = "bpm-display"
 
-    # ── UI class helpers ──────────────────────────────────────────────────
     banner_class    = 'edit-status active' if edit_mode else 'edit-status'
     container_class = 'graph-container edit-mode' if edit_mode else 'graph-container'
 
