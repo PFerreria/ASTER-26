@@ -123,16 +123,16 @@ def sensor_worker(cfg: dict, stop_event: threading.Event) -> None:
             return
     log(label, "Initialised. Starting collection — place finger on sensor.")
 
-    sensor.sensorStartCollect()
+    sensor.sensor_start_collect()
     reading_num = 0
     start_time  = time.time()
 
     try:
         while not stop_event.is_set():
-            sensor.getHeartbeatSPO2()
-            hr      = sensor._sHeartbeatSPO2.Heartbeat  # bpm
-            spo2    = sensor._sHeartbeatSPO2.SPO2       # %
-            temp    = sensor.getTemperature_C()          # °C
+            sensor.get_heartbeat_SPO2()
+            hr      = sensor.heartbeat  # bpm
+            spo2    = sensor.SPO2       # %
+            temp    = sensor.get_temperature_c()  # °C
             elapsed = time.time() - start_time
             reading_num += 1
 
@@ -147,7 +147,7 @@ def sensor_worker(cfg: dict, stop_event: threading.Event) -> None:
                 time.sleep(0.1)
 
     finally:
-        sensor.sensorEndCollect()
+        sensor.sensor_end_collect()
         log(label, f"Stopped. Total readings collected: {reading_num}")
 
 
