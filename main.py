@@ -656,6 +656,7 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
     elif trigger_id == 'sensor-button':
         new_sensor_mode  = not new_sensor_mode
         sensor_disabled  = not new_sensor_mode
+        all_nodes_timer  = 0
         if new_sensor_mode:
             new_cycle_active = False
             cycle_disabled   = True
@@ -679,11 +680,20 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
             b1 = _sensor_readings["bpm1"]
             b2 = _sensor_readings["bpm2"]
 
-        for bpm in (b1, b2):
-            node_id = bpm_to_node(bpm, active_nodes)
-            if node_id is not None and node_id not in active_nodes:
-                active_nodes.append(node_id)
-                input_value = NODE_TO_INPUT[node_id]
+        if all_nodes_timer > 0:
+            all_nodes_timer -= 1
+            if all_nodes_timer == 0:
+                active_nodes = []
+        elif len(active_nodes) >= 35:
+            all_nodes_timer = 5
+        else:
+            valid_bpms = [b for b in (b1, b2) if b is not None and b > 0]
+            if valid_bpms:
+                mean_bpm = sum(valid_bpms) / len(valid_bpms)
+                node_id  = bpm_to_node(mean_bpm, active_nodes)
+                if node_id is not None:
+                    active_nodes.append(node_id)
+                    input_value = NODE_TO_INPUT[node_id]
 
     elif trigger_id == 'node-input' and input_value is not None and not edit_mode:
         input_value = max(60, min(94, int(input_value)))
