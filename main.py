@@ -332,6 +332,7 @@ app.layout = html.Div(className='container', children=[
     dcc.Store(id='edit-index',            data=0),
     dcc.Store(id='node-positions-store',  data=None),
     dcc.Store(id='sensor-mode',           data=False),
+    dcc.Store(id='all-nodes-timer',       data=0),
 
     # Intervals
     dcc.Interval(id='cycle-interval',     interval=1000, disabled=True),
@@ -555,7 +556,8 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
      Output('sensor-mode',          'data'),
      Output('sensor-interval',      'disabled'),
      Output('bpm-display',          'children'),
-     Output('bpm-display',          'className')],
+     Output('bpm-display',          'className'),
+     Output('all-nodes-timer',      'data')],
     [Input('node-input',      'value'),
      Input('random-button',   'n_clicks'),
      Input('cycle-button',    'n_clicks'),
@@ -571,13 +573,14 @@ def create_figure(active_nodes, node_positions=None, edit_mode=False, edit_index
      State('edit-mode',             'data'),
      State('edit-index',            'data'),
      State('node-positions-store',  'data'),
-     State('sensor-mode',           'data')]
+     State('sensor-mode',           'data'),
+     State('all-nodes-timer',       'data')]
 )
 def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
                   reset_clicks, cycle_interval, edit_clicks, click_data,
                   sensor_clicks, sensor_interval,
                   active_nodes, cycle_active, edit_mode, edit_index,
-                  node_positions, sensor_mode):
+                  node_positions, sensor_mode, all_nodes_timer):
 
     ctx = dash.callback_context
     trigger_id = (ctx.triggered[0]['prop_id'].split('.')[0]
@@ -591,6 +594,9 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
         edit_index = 0
     if sensor_mode is None:
         sensor_mode = False
+    if all_nodes_timer is None:
+        all_nodes_timer = 0
+    all_nodes_timer = int(all_nodes_timer)
 
     new_cycle_active  = bool(cycle_active)
     cycle_disabled    = not new_cycle_active
@@ -610,6 +616,7 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
         edit_index       = 0
         new_sensor_mode  = False
         sensor_disabled  = True
+        all_nodes_timer  = 0
 
     elif trigger_id == 'random-button':
         input_value      = int(np.random.randint(60, 95))
@@ -624,6 +631,7 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
         cycle_disabled   = False
         new_sensor_mode  = False
         sensor_disabled  = True
+        all_nodes_timer  = 0
         if not active_nodes:
             active_nodes.append(0)
             input_value = NODE_TO_INPUT[0]
@@ -633,6 +641,7 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
         cycle_disabled   = True
         new_sensor_mode  = False
         sensor_disabled  = True
+        all_nodes_timer  = 0
 
     elif trigger_id == 'edit-button':
         edit_mode        = True
@@ -652,9 +661,12 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
             cycle_disabled   = True
 
     elif trigger_id == 'cycle-interval' and new_cycle_active:
-        if len(active_nodes) >= 35:
-            active_nodes = [0]
-            input_value  = NODE_TO_INPUT[0]
+        if all_nodes_timer > 0:
+            all_nodes_timer -= 1
+            if all_nodes_timer == 0:
+                active_nodes = []
+        elif len(active_nodes) >= 35:
+            all_nodes_timer = 5
         else:
             for i in range(35):
                 if i not in active_nodes:
@@ -729,7 +741,7 @@ def update_system(input_value, random_clicks, cycle_clicks, stop_clicks,
 
     return (fig, input_value, active_nodes, new_cycle_active, cycle_disabled,
             edit_mode, edit_index, node_positions, banner_class, container_class,
-            new_sensor_mode, sensor_disabled, bpm_text, bpm_class)
+            new_sensor_mode, sensor_disabled, bpm_text, bpm_class, all_nodes_timer)
 
 
 # ============================================
