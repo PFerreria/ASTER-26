@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=ASTER-26 Browser
+Exec=/home/pi/ASTER-26/start_browser.sh
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true

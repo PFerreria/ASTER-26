@@ -1,0 +1,14 @@
+[Unit]
+Description=ASTER-26 Node Activation System
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/ASTER-26
+ExecStart=/usr/bin/python3 /home/pi/ASTER-26/main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
